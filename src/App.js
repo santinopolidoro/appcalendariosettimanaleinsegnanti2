@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import { saveTeachersToDb, loadTeachersFromDb, saveScheduleToDb, loadScheduleFromDb } from './services/teacherData';
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+const DAYS = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì'];
 const TIME_SLOTS = [
   '8:00-9:00', '9:00-10:00', '10:00-11:00', '11:00-12:00',
   '12:00-13:00', '13:00-14:00', '14:00-15:00', '15:00-16:00'
@@ -12,6 +12,8 @@ function App() {
   const [teachers, setTeachers] = useState([]);
   const [editingEvent, setEditingEvent] = useState(null);
   const [showPopup, setShowPopup] = useState(false);
+  const [editingTeacher, setEditingTeacher] = useState(null);
+  const [showTeacherPopup, setShowTeacherPopup] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
@@ -79,6 +81,45 @@ function App() {
     setTeachers(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handleEditTeacher = (index) => {
+    setEditingTeacher({...teachers[index], index});
+    setShowTeacherPopup(true);
+  };
+
+  const handleTeacherPopupSave = () => {
+    const { index, ...teacherData } = editingTeacher;
+    setTeachers(prev => {
+      const newTeachers = [...prev];
+      newTeachers[index] = teacherData;
+      return newTeachers;
+    });
+    setShowTeacherPopup(false);
+    setEditingTeacher(null);
+  };
+
+  const handleTeacherPopupCancel = () => {
+    setShowTeacherPopup(false);
+    setEditingTeacher(null);
+  };
+
+  const handleTeacherInputChange = (e) => {
+    const { name, value } = e.target;
+    setEditingTeacher(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleTeacherCheckboxChange = (e, type) => {
+    const { value, checked } = e.target;
+    setEditingTeacher(prev => ({
+      ...prev,
+      [type]: checked 
+        ? [...prev[type], value]
+        : prev[type].filter(item => item !== value)
+    }));
+  };
+
   const handleSelectAllDays = () => {
     setFormData(prev => ({
       ...prev,
@@ -116,7 +157,7 @@ function App() {
       }
     });
 
-    let hourHeaders = ['Teacher'];
+    let hourHeaders = ['Insegnante'];
     DAYS.forEach(() => {
       TIME_SLOTS.forEach((_, index) => {
         hourHeaders.push(index + 1);
@@ -140,7 +181,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'teacher-schedule.csv';
+    a.download = 'orario-insegnanti.csv';
     a.click();
   };
 
@@ -205,50 +246,92 @@ function App() {
       });
     });
   
+    // Prima passiamo attraverso tutti gli insegnanti per assegnare le ore per classe
     teachers.forEach(teacher => {
-      let remainingHours = parseInt(teacher.hoursPerWeek);
-      const availableDays = [...teacher.availableDays];
-      const availableSlots = [...teacher.availableTimeSlots];
-      const maxPerDay = parseInt(teacher.maxHoursPerDay) || 8;
-      const classroomHoursCounts = {};  // Track hours per classroom
+      // Inizializza il conteggio delle ore per classe
+      const classroomHoursCounts = {};
       const classrooms = teacher.preferredClassrooms.split(',').map(c => c.trim());
-  
-      while (remainingHours > 0 && availableDays.length > 0 && availableSlots.length > 0) {
-        const randomDayIndex = Math.floor(Math.random() * availableDays.length);
-        const randomDay = availableDays[randomDayIndex];
-        const randomSlotIndex = Math.floor(Math.random() * availableSlots.length);
-        const randomSlot = availableSlots[randomSlotIndex];
+      
+      // Calcola il totale delle ore settimanali dell'insegnante
+      const totalWeeklyHours = parseInt(teacher.hoursPerWeek);
+      
+      // Distribuisci le ore tra le classi in base ai limiti specificati
+      classrooms.forEach(classroom => {
+        // Se è specificato un limite per questa classe, usalo, altrimenti distribuisci equamente
+        const maxHoursForClass = teacher.classroomHours[classroom] || Math.ceil(totalWeeklyHours / classrooms.length);
+        classroomHoursCounts[classroom] = maxHoursForClass;
+      });
+      
+      // Ora assegna le ore per ogni classe
+      classrooms.forEach(classroom => {
+        let remainingHoursForClass = classroomHoursCounts[classroom];
+        const availableDays = [...teacher.availableDays];
+        const maxPerDay = parseInt(teacher.maxHoursPerDay) || 8;
         
-        const hoursOnThisDay = Object.values(newSchedule[randomDay]).flat()
-          .filter(entry => entry.teacher === teacher.name).length;
-
-        if (!newSchedule[randomDay][randomSlot].length && hoursOnThisDay < maxPerDay) {
-          // Try each classroom until we find one that works
-          for (const classroom of classrooms) {
-            classroomHoursCounts[classroom] = (classroomHoursCounts[classroom] || 0);
+        // Continua finché ci sono ore da assegnare per questa classe
+        while (remainingHoursForClass > 0 && availableDays.length > 0) {
+          // Ordina i giorni in base al numero di ore già assegnate (per distribuire equamente)
+          availableDays.sort((a, b) => {
+            const hoursOnDayA = Object.values(newSchedule[a]).flat()
+              .filter(entry => entry.teacher === teacher.name).length;
+            const hoursOnDayB = Object.values(newSchedule[b]).flat()
+              .filter(entry => entry.teacher === teacher.name).length;
+            return hoursOnDayA - hoursOnDayB;
+          });
+          
+          // Prendi il giorno con meno ore assegnate
+          const currentDay = availableDays[0];
+          
+          // Verifica quante ore sono già assegnate in questo giorno
+          const hoursOnThisDay = Object.values(newSchedule[currentDay]).flat()
+            .filter(entry => entry.teacher === teacher.name).length;
+          
+          // Se abbiamo raggiunto il massimo di ore per questo giorno, rimuovilo e continua
+          if (hoursOnThisDay >= maxPerDay) {
+            availableDays.shift();
+            continue;
+          }
+          
+          // Trova gli slot disponibili per questo giorno
+          const availableSlots = [...teacher.availableTimeSlots].filter(slot => {
+            // Verifica se l'insegnante è già presente in questo slot
+            const isTeacherInSlot = newSchedule[currentDay][slot].some(entry => entry.teacher === teacher.name);
+            // Verifica se la classe è già occupata in questo slot
+            const isClassroomOccupied = newSchedule[currentDay][slot].some(entry => entry.classroom === classroom);
             
-            // Check if we haven't exceeded the classroom hours limit
-            if (!teacher.classroomHours[classroom] || 
-                classroomHoursCounts[classroom] < teacher.classroomHours[classroom]) {
-              newSchedule[randomDay][randomSlot].push({
-                teacher: teacher.name,
-                subject: teacher.subjects.split(',')[0].trim(),
-                classroom: classroom
-              });
-              classroomHoursCounts[classroom]++;
-              remainingHours--;
-              break;
-            }
+            return !isTeacherInSlot && !isClassroomOccupied;
+          });
+          
+          // Se non ci sono slot disponibili, rimuovi il giorno e continua
+          if (availableSlots.length === 0) {
+            availableDays.shift();
+            continue;
+          }
+          
+          // Ordina gli slot in base all'orario (prima mattina, poi pomeriggio)
+          availableSlots.sort((a, b) => {
+            const hourA = parseInt(a.split(':')[0]);
+            const hourB = parseInt(b.split(':')[0]);
+            return hourA - hourB;
+          });
+          
+          // Assegna l'ora nel primo slot disponibile
+          const slotToAssign = availableSlots[0];
+          
+          newSchedule[currentDay][slotToAssign].push({
+            teacher: teacher.name,
+            subject: teacher.subjects.split(',')[0].trim(),
+            classroom: classroom
+          });
+          
+          remainingHoursForClass--;
+          
+          // Se abbiamo assegnato tutte le ore per questa classe, esci dal ciclo
+          if (remainingHoursForClass === 0) {
+            break;
           }
         }
-
-        // If we couldn't schedule this slot, remove it from available options
-        if (hoursOnThisDay >= maxPerDay) {
-          availableDays.splice(randomDayIndex, 1);
-        } else if (newSchedule[randomDay][randomSlot].length > 0) {
-          availableSlots.splice(randomSlotIndex, 1);
-        }
-      }
+      });
     });
   
     setSchedule(newSchedule);
@@ -267,7 +350,7 @@ function App() {
             name="name"
             value={formData.name}
             onChange={handleInputChange}
-            placeholder="Teacher Name"
+            placeholder="Nome insegnante"
             required
           />
         </div>
@@ -277,7 +360,7 @@ function App() {
             name="hoursPerWeek"
             value={formData.hoursPerWeek}
             onChange={handleInputChange}
-            placeholder="Hours per Week"
+            placeholder="Ore alla settimana"
             required
           />
         </div>
@@ -287,7 +370,7 @@ function App() {
             name="subjects"
             value={formData.subjects}
             onChange={handleInputChange}
-            placeholder="Subjects (comma separated)"
+            placeholder="Materie (separate con virgola)"
             required
           />
         </div>
@@ -297,7 +380,7 @@ function App() {
             name="preferredClassrooms"
             value={formData.preferredClassrooms}
             onChange={handleInputChange}
-            placeholder="Preferred Classrooms (comma separated)"
+            placeholder="Classi (separate con virgola)"
             required
           />
         </div>
@@ -309,7 +392,7 @@ function App() {
             name="maxHoursPerDay"
             value={formData.maxHoursPerDay}
             onChange={handleInputChange}
-            placeholder="Maximum Hours per Day"
+            placeholder="Massimo ore al giorno"
             min="1"
             max="8"
             required
@@ -321,14 +404,14 @@ function App() {
           classroom.trim() && (
             <div key={classroom.trim()} className="classroom-hours">
               <label>
-                Max hours in {classroom.trim()}:
+                Massimo ore in {classroom.trim()}:
                 <input
                   type="number"
                   min="0"
                   max={formData.hoursPerWeek}
                   value={formData.classroomHours[classroom.trim()] || ''}
                   onChange={(e) => handleClassroomHoursChange(classroom, e.target.value)}
-                  placeholder="Max hours"
+                  placeholder="Max ore"
                 />
               </label>
             </div>
@@ -336,13 +419,13 @@ function App() {
         )}
 
         <div className="availability">
-          <h3>Available Days:</h3>
+          <h3>Giorni in cui è disponibile:</h3>
           <button 
             type="button" 
               onClick={handleSelectAllDays}
               style={{ marginBottom: '10px' }}
             >
-              Select All Days
+              Seleziona tutta la mattina
           </button>
           {DAYS.map(day => (
             <label key={day}>
@@ -358,13 +441,13 @@ function App() {
         </div>
 
         <div className="availability">
-          <h3>Available Time Slots:</h3>
+          <h3>Slot orari disponibili:</h3>
           <button 
             type="button" 
             onClick={handleSelectDefaultHours}
             style={{ marginBottom: '10px' }}
           >
-            Select 8:00-14:00
+            Seleziona tutto il giorno
           </button>
           {TIME_SLOTS.map(slot => (
             <label key={slot}>
@@ -379,20 +462,20 @@ function App() {
           ))}
         </div>
 
-        <button type="submit">Add Teacher</button>
+        <button type="submit">Aggiungi insegnante</button>
       </form>
 
       <div className="teachers-list">
-        <h2>Teachers Added:</h2>
+        <h2>Insegnanti Aggiunti:</h2>
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Hours/Week</th>
-              <th>Subjects</th>
-              <th>Preferred Classrooms</th>
-              <th>Available Days</th>
-              <th>Actions</th>
+              <th>Nome</th>
+              <th>Ore/settimana</th>
+              <th>Materie</th>
+              <th>Classi</th>
+              <th>Giorni</th>
+              <th>Azioni</th>
             </tr>
           </thead>
           <tbody>
@@ -404,12 +487,20 @@ function App() {
                 <td>{teacher.preferredClassrooms}</td>
                 <td>{teacher.availableDays.join(', ')}</td>
                 <td>
-                  <button 
-                    onClick={() => handleRemoveTeacher(index)}
-                    style={{ backgroundColor: '#ff4444' }}
-                  >
-                    Remove
-                  </button>
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                    <button 
+                      onClick={() => handleEditTeacher(index)}
+                      style={{ backgroundColor: '#4CAF50' }}
+                    >
+                      Modifica
+                    </button>
+                    <button 
+                      onClick={() => handleRemoveTeacher(index)}
+                      style={{ backgroundColor: '#ff4444' }}
+                    >
+                      Rimuovi
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -418,17 +509,17 @@ function App() {
       </div>
 
       <div className="schedule-controls">
-        <button onClick={generateSchedule}>Generate Schedule</button>
-        <button onClick={exportSchedule}>Export Schedule</button>
+        <button onClick={generateSchedule}>Crea orario</button>
+        <button onClick={exportSchedule}>Esporta orario</button>
       </div>
 
       {Object.keys(schedule).length > 0 && (
         <div className="schedule">
-          <h2>Generated Schedule</h2>
+          <h2>Orario</h2>
           <table>
             <thead>
               <tr>
-                <th>Time Slot</th>
+                <th>Slot orari</th>
                 {DAYS.map(day => (
                   <th key={day}>{day}</th>
                 ))}
@@ -468,6 +559,193 @@ function App() {
         </div>
       )}
 
+      {showTeacherPopup && editingTeacher && (
+        <div className="popup-overlay" style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div className="popup" style={{
+            backgroundColor: 'white',
+            padding: '20px',
+            borderRadius: '8px',
+            width: '80%',
+            maxWidth: '600px',
+            maxHeight: '80vh',
+            overflowY: 'auto'
+          }}>
+            <h2>Modifica Insegnante</h2>
+            
+            <div style={{ margin: '10px 0' }}>
+              <label>
+                <strong>Nome:</strong>
+                <input
+                  type="text"
+                  name="name"
+                  value={editingTeacher.name}
+                  onChange={handleTeacherInputChange}
+                  style={{ marginLeft: '10px', padding: '5px', width: '70%' }}
+                  required
+                />
+              </label>
+            </div>
+            
+            <div style={{ margin: '10px 0' }}>
+              <label>
+                <strong>Ore alla settimana:</strong>
+                <input
+                  type="number"
+                  name="hoursPerWeek"
+                  value={editingTeacher.hoursPerWeek}
+                  onChange={handleTeacherInputChange}
+                  style={{ marginLeft: '10px', padding: '5px', width: '70%' }}
+                  required
+                />
+              </label>
+            </div>
+            
+            <div style={{ margin: '10px 0' }}>
+              <label>
+                <strong>Materie:</strong>
+                <input
+                  type="text"
+                  name="subjects"
+                  value={editingTeacher.subjects}
+                  onChange={handleTeacherInputChange}
+                  style={{ marginLeft: '10px', padding: '5px', width: '70%' }}
+                  required
+                />
+              </label>
+            </div>
+            
+            <div style={{ margin: '10px 0' }}>
+              <label>
+                <strong>Classi:</strong>
+                <input
+                  type="text"
+                  name="preferredClassrooms"
+                  value={editingTeacher.preferredClassrooms}
+                  onChange={handleTeacherInputChange}
+                  style={{ marginLeft: '10px', padding: '5px', width: '70%' }}
+                  required
+                />
+              </label>
+            </div>
+            
+            {/* Ore per classe */}
+            <div style={{ margin: '20px 0' }}>
+              <h3>Ore per classe:</h3>
+              {editingTeacher.preferredClassrooms.split(',').map(classroom => 
+                classroom.trim() && (
+                  <div key={classroom.trim()} style={{ margin: '10px 0' }}>
+                    <label>
+                      <strong>Massimo ore in {classroom.trim()}:</strong>
+                      <input
+                        type="number"
+                        min="0"
+                        max={editingTeacher.hoursPerWeek}
+                        value={editingTeacher.classroomHours?.[classroom.trim()] || ''}
+                        onChange={(e) => {
+                          const classroom_trim = classroom.trim();
+                          const hours = parseInt(e.target.value) || 0;
+                          setEditingTeacher(prev => ({
+                            ...prev,
+                            classroomHours: {
+                              ...prev.classroomHours,
+                              [classroom_trim]: hours
+                            }
+                          }));
+                        }}
+                        style={{ marginLeft: '10px', padding: '5px', width: '70px' }}
+                        placeholder="Max ore"
+                      />
+                    </label>
+                  </div>
+                )
+              )}
+            </div>
+            
+            <div style={{ margin: '10px 0' }}>
+              <label>
+                <strong>Ore massime al giorno:</strong>
+                <input
+                  type="number"
+                  name="maxHoursPerDay"
+                  value={editingTeacher.maxHoursPerDay}
+                  onChange={handleTeacherInputChange}
+                  style={{ marginLeft: '10px', padding: '5px', width: '70%' }}
+                />
+              </label>
+            </div>
+            
+            <div style={{ margin: '20px 0' }}>
+              <h3>Giorni disponibili:</h3>
+              {DAYS.map(day => (
+                <label key={day} style={{ display: 'block', margin: '5px 0' }}>
+                  <input
+                    type="checkbox"
+                    value={day}
+                    checked={editingTeacher.availableDays.includes(day)}
+                    onChange={(e) => handleTeacherCheckboxChange(e, 'availableDays')}
+                  />
+                  {day}
+                </label>
+              ))}
+            </div>
+            
+            <div style={{ margin: '20px 0' }}>
+              <h3>Slot orari disponibili:</h3>
+              {TIME_SLOTS.map(slot => (
+                <label key={slot} style={{ display: 'block', margin: '5px 0' }}>
+                  <input
+                    type="checkbox"
+                    value={slot}
+                    checked={editingTeacher.availableTimeSlots.includes(slot)}
+                    onChange={(e) => handleTeacherCheckboxChange(e, 'availableTimeSlots')}
+                  />
+                  {slot}
+                </label>
+              ))}
+            </div>
+            
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
+              <button 
+                onClick={handleTeacherPopupCancel}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#ccc',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Annulla
+              </button>
+              <button 
+                onClick={handleTeacherPopupSave}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#007bff',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Salva
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {showPopup && editingEvent && (
         <div className="popup-overlay" style={{
           position: 'fixed',
@@ -488,14 +766,14 @@ function App() {
             minWidth: '300px',
             maxWidth: '500px'
           }}>
-            <h3>Edit Event</h3>
-            <p><strong>Teacher:</strong> {editingEvent.teacher}</p>
-            <p><strong>Subject:</strong> {editingEvent.subject}</p>
-            <p><strong>Classroom:</strong> {editingEvent.classroom}</p>
+            <h3>Modifica slot</h3>
+            <p><strong>Insegnante:</strong> {editingEvent.teacher}</p>
+            <p><strong>Materia:</strong> {editingEvent.subject}</p>
+            <p><strong>Classe:</strong> {editingEvent.classroom}</p>
             
             <div style={{ margin: '20px 0' }}>
               <label>
-                <strong>Day:</strong>
+                <strong>Giorno:</strong>
                 <select 
                   value={editingEvent.newDay} 
                   onChange={(e) => setEditingEvent({...editingEvent, newDay: e.target.value})}
@@ -510,7 +788,7 @@ function App() {
             
             <div style={{ margin: '20px 0' }}>
               <label>
-                <strong>Time Slot:</strong>
+                <strong>Ora:</strong>
                 <select 
                   value={editingEvent.newSlot} 
                   onChange={(e) => setEditingEvent({...editingEvent, newSlot: e.target.value})}
@@ -553,6 +831,99 @@ function App() {
           </div>
         </div>
       )}
+
+      <div className="data-management-controls" style={{ 
+        marginTop: '30px', 
+        padding: '20px', 
+        backgroundColor: '#f5f5f5', 
+        borderRadius: '8px',
+        textAlign: 'center'
+      }}>
+        <h3>Data Management</h3>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '20px' }}>
+          <button 
+            onClick={() => {
+              // Save all data to CSV file
+              try {
+                // Import the CSV utility functions
+                import('./utils/csvUtils').then(({ convertToCSV, downloadCSV }) => {
+                  // Convert data to CSV format
+                  const csvData = convertToCSV(teachers, schedule);
+                  
+                  // Download the CSV file
+                  downloadCSV(csvData, 'salvataggio_orario_insegnanti.csv');
+                  
+                  alert('Tutti i dati sono stati salvati nel file CSV!');
+                });
+              } catch (error) {
+                console.error('Errore durante il salvataggio dei dati nel file CSV:', error);
+                alert('Salvataggio dei dati nel file CSV fallito. Si prega di riprovare.');
+              }
+            }}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#28a745',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '16px',
+              cursor: 'pointer'
+            }}
+          >
+            Salva tutti i dati
+          </button>
+          <button 
+            onClick={() => {
+              // Create a file input element
+              const fileInput = document.createElement('input');
+              fileInput.type = 'file';
+              fileInput.accept = '.csv';
+              
+              // Handle file selection
+              fileInput.onchange = (event) => {
+                const file = event.target.files[0];
+                if (!file) {
+                  return;
+                }
+                
+                // Import the CSV utility functions
+                import('./utils/csvUtils').then(({ readCSVFile, parseCSV }) => {
+                  // Read the CSV file
+                  readCSVFile(file)
+                    .then(csvData => {
+                      // Parse the CSV data
+                      const { teachers: importedTeachers, schedule: importedSchedule } = parseCSV(csvData);
+                      
+                      // Update the state with the imported data
+                      setTeachers(importedTeachers);
+                      setSchedule(importedSchedule);
+                      
+                      alert('Tutti i dati sono stati importati dal file CSV!');
+                    })
+                    .catch(error => {
+                      console.error('Errore nella lettura dei dati dal file CSV:', error);
+                      alert('Importazione dei dati dal file CSV fallita. Si prega di riprovare.');
+                    });
+                });
+              };
+              
+              // Trigger the file input click
+              fileInput.click();
+            }}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#17a2b8',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '16px',
+              cursor: 'pointer'
+            }}
+          >
+            Importa tutti i dati
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
